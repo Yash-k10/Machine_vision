@@ -20,6 +20,13 @@ A real-time desktop application for analyzing motion patterns between consecutiv
 
 ---
 
+## 📊 System Workflow & Architecture
+
+- **Interactive HTML Workflow Chart**: [workflow_chart.html](workflow_chart.html)
+- **PowerPoint Presentation**: [workflow_chart.pptx](workflow_chart.pptx)
+
+---
+
 ## 🚀 Getting Started
 
 ### Prerequisites
@@ -30,8 +37,9 @@ A real-time desktop application for analyzing motion patterns between consecutiv
 ### Installation
 
 ```bash
-# Navigate to the project directory
-cd TAE1
+# Clone the repository
+git clone https://github.com/Yash-k10/Machine_vision.git
+cd Machine_vision
 
 # Install dependencies
 pip install -r requirements.txt
@@ -76,11 +84,14 @@ python main.py
 ```
 TAE1/
 ├── main.py                  # Entry point
+├── workflow_chart.html      # Interactive visual workflow chart
+├── workflow_chart.pptx      # Presentation deck
 ├── core/                    # Optical flow engine
 │   ├── video_source.py      # Webcam / file abstraction
 │   ├── lucas_kanade.py      # Sparse optical flow
 │   ├── farneback.py         # Dense optical flow
 │   ├── motion_heatmap.py    # Cumulative heatmap
+│   ├── motion_detector.py   # MOG2 background subtractor
 │   └── motion_stats.py      # Motion metrics calculator
 ├── gui/                     # PyQt5 interface
 │   ├── app_window.py        # Main window
