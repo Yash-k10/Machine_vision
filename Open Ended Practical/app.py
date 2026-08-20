@@ -2,7 +2,7 @@
 Smart Parking Slot Detection Web Dashboard (FastAPI + White & Olive Theme).
 
 Provides real-time parking slot occupancy monitoring, multi-feature OpenCV classification,
-Red 🔴 Occupied vs Green 🟢 Vacant visual overlays, and analytics summaries.
+automatic slot outline detection, Red 🔴 Occupied vs Green 🟢 Vacant visual overlays, and analytics summaries.
 Made by Yash Kapse.
 """
 
@@ -48,6 +48,7 @@ slot_manager = SlotManager()
 class ProcessRequest(BaseModel):
     image_base64: Optional[str] = None
     sensitivity: float = 0.5
+    auto_detect_slots: bool = False
     blur_kernel: int = 3
     block_size: int = 25
     c_val: int = 16
@@ -90,6 +91,7 @@ async def generate_sample(occupied_count: int = 6):
 async def process_parking_frame(req: ProcessRequest):
     """
     Process parking lot image using Multi-Feature OpenCV Classification Engine.
+    Supports automatic slot outline detection or resolution-scaled grid layouts.
     """
     try:
         if not req.image_base64:
@@ -106,27 +108,32 @@ async def process_parking_frame(req: ProcessRequest):
         if raw_img is None:
             return JSONResponse(status_code=400, content={"success": False, "error": "Could not decode parking image."})
 
-        # Load grid slots and scale dynamically to uploaded image dimensions
-        base_slots = slot_manager.load_slots()
-        img_h, img_w = raw_img.shape[:2]
-        base_w, base_h = 780, 530
-
-        scale_x = img_w / base_w
-        scale_y = img_h / base_h
-
-        slots = []
-        for s in base_slots:
-            bx, by, bw, bh = s["bbox"]
-            sx = max(0, int(bx * scale_x))
-            sy = max(0, int(by * scale_y))
-            sw = max(10, min(img_w - sx, int(bw * scale_x)))
-            sh = max(10, min(img_h - sy, int(bh * scale_y)))
-            slots.append({
-                "id": s["id"],
-                "bbox": [sx, sy, sw, sh]
-            })
-
         detector = ParkingDetector(sensitivity=req.sensitivity)
+        slots = []
+
+        # Check if automatic slot outline detection is requested or fallback to resolution scaling
+        if req.auto_detect_slots:
+            slots = detector.detect_automatic_slots(raw_img)
+
+        if not slots:
+            base_slots = slot_manager.load_slots()
+            img_h, img_w = raw_img.shape[:2]
+            base_w, base_h = 780, 530
+
+            scale_x = img_w / base_w
+            scale_y = img_h / base_h
+
+            for s in base_slots:
+                bx, by, bw, bh = s["bbox"]
+                sx = max(0, int(bx * scale_x))
+                sy = max(0, int(by * scale_y))
+                sw = max(10, min(img_w - sx, int(bw * scale_x)))
+                sh = max(10, min(img_h - sy, int(bh * scale_y)))
+                slots.append({
+                    "id": s["id"],
+                    "bbox": [sx, sy, sw, sh]
+                })
+
         res = detector.process_slots(raw_img, slots)
 
         return {
@@ -359,6 +366,16 @@ async def serve_ui():
         .control-label { font-size: 0.85rem; font-weight: 600; color: var(--text-main); display: flex; justify-content: space-between; }
         input[type="range"] { width: 100%; accent-color: var(--olive-primary); }
 
+        .toggle-switch {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 0.85rem;
+            font-weight: 600;
+            padding: 6px 0;
+            color: var(--text-main);
+        }
+
         .content-area {
             display: flex;
             flex-direction: column;
@@ -494,9 +511,14 @@ async def serve_ui():
             </div>
 
             <div>
-                <div class="section-title">⚙️ Vision Sensitivity Tuning</div>
+                <div class="section-title">⚙️ Slot Detection Settings</div>
 
-                <div class="control-group">
+                <div class="toggle-switch">
+                    <span>Auto-Detect Slot Outlines</span>
+                    <input type="checkbox" id="chkAutoDetectSlots" onchange="triggerProcess()">
+                </div>
+
+                <div class="control-group" style="margin-top: 10px;">
                     <div class="control-label">
                         <span>Detection Sensitivity</span>
                         <span id="lblSensitivityVal">0.5</span>
@@ -505,7 +527,7 @@ async def serve_ui():
                 </div>
 
                 <div style="font-size: 0.78rem; color: var(--text-muted); line-height: 1.4; background: var(--olive-soft); padding: 10px; border-radius: 8px;">
-                    💡 <strong>Multi-Feature Fusion:</strong> Fuses Inner Edge Density, Canny Contours & Texture Standard Deviation. Ignores white boundary lines.
+                    💡 <strong>Multi-Feature Fusion:</strong> Crops inner 80% ROI to ignore white lines. Analyzes Edge Density, Canny Contours & HSV Color Variance.
                 </div>
             </div>
 
@@ -634,7 +656,8 @@ async def serve_ui():
 
             const payload = {
                 image_base64: selectedImageBase64,
-                sensitivity: parseFloat(document.getElementById('sensitivityRange').value)
+                sensitivity: parseFloat(document.getElementById('sensitivityRange').value),
+                auto_detect_slots: document.getElementById('chkAutoDetectSlots').checked
             };
 
             try {
