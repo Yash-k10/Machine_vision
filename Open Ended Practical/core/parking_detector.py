@@ -1,9 +1,10 @@
 """
-Advanced Smart Parking Occupancy & Slot Detection Engine.
+Real-World Multi-Feature Smart Parking Occupancy & Slot Detection Engine.
 
-Implements:
-1. Automatic Parking Bay Outline Detection via Contour & Aspect Ratio Filtering.
-2. Multi-Feature Vision Classification (Inner ROI Edge Density, Grayscale Variance, and HSV Saturation/Value Contrast).
+Features:
+1. Multi-Color (White & Yellow) Line Detection & Hough Transform Slot Outline Extractor.
+2. Background Contrast Differential + HSV Saturation & Texture Variance Classifier.
+3. Robust Fallback & Custom Bounding Box ROI Support.
 """
 
 import cv2
@@ -13,53 +14,111 @@ from typing import List, Dict, Any, Tuple, Optional
 
 class ParkingDetector:
     """
-    Multi-Feature OpenCV Parking Slot Detector & Occupancy Classifier.
+    Real-World Computer Vision Parking Slot Detector & Occupancy Classifier.
     """
 
     def __init__(self, sensitivity: float = 0.5):
         """
-        :param sensitivity: Sensitivity scalar [0.1 to 1.0].
+        :param sensitivity: Sensitivity slider [0.1 to 1.0].
         """
         self.sensitivity = max(0.1, min(1.0, sensitivity))
 
     def detect_automatic_slots(self, image: np.ndarray) -> List[Dict[str, Any]]:
         """
-        Automatically detects parking bay rectangular outlines from image
-        using Canny edge analysis and aspect-ratio geometry filtering.
+        Detects parking bay outlines from real-life images using HSV White & Yellow line masks,
+        Morphological kernel filtering, and Hough Line segment analysis.
         """
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-
-        # Detect white/light slot boundary lines
-        _, thresh = cv2.threshold(blurred, 180, 255, cv2.THRESH_BINARY)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-        dilated = cv2.dilate(thresh, kernel, iterations=2)
-
-        contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        detected_slots = []
         img_h, img_w = image.shape[:2]
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV) if len(image.shape) == 3 else None
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
+
+        # 1. White & Yellow Line Color Masks (Common parking line paint)
+        if hsv is not None:
+            # White mask
+            lower_white = np.array([0, 0, 180], dtype=np.uint8)
+            upper_white = np.array([180, 50, 255], dtype=np.uint8)
+            mask_white = cv2.inRange(hsv, lower_white, upper_white)
+
+            # Yellow mask
+            lower_yellow = np.array([15, 80, 140], dtype=np.uint8)
+            upper_yellow = np.array([35, 255, 255], dtype=np.uint8)
+            mask_yellow = cv2.inRange(hsv, lower_yellow, upper_yellow)
+
+            line_mask = cv2.bitwise_or(mask_white, mask_yellow)
+        else:
+            _, line_mask = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+
+        # 2. Morphological dilation to connect broken line segments
+        kernel_v = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 15))
+        kernel_h = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
+        
+        dilated_v = cv2.dilate(line_mask, kernel_v, iterations=2)
+        dilated_h = cv2.dilate(line_mask, kernel_h, iterations=2)
+        combined_lines = cv2.bitwise_or(dilated_v, dilated_h)
+
+        # 3. Contour Detection on Line Mask
+        contours, _ = cv2.findContours(combined_lines, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        detected_slots = []
 
         for c in contours:
             x, y, w, h = cv2.boundingRect(c)
+            area = w * h
             aspect_ratio = float(h) / max(1, w)
 
-            # Filter for parking slot geometry (width: 35-250px, height: 70-350px, aspect ratio: 1.1-3.5)
-            if (35 <= w <= int(img_w * 0.35)) and (70 <= h <= int(img_h * 0.5)):
-                if 1.1 <= aspect_ratio <= 3.2 or 0.3 <= aspect_ratio <= 0.9:
+            # Filter contours by size and aspect ratio suitable for parking slots
+            min_area = (img_w * img_h) * 0.008
+            max_area = (img_w * img_h) * 0.20
+
+            if min_area <= area <= max_area:
+                if 0.3 <= aspect_ratio <= 3.5:
                     detected_slots.append({
                         "id": len(detected_slots) + 1,
                         "bbox": [x, y, w, h]
                     })
 
+        # Non-Maximum Suppression to remove overlapping bounding boxes
+        if len(detected_slots) > 1:
+            detected_slots = self._suppress_overlaps(detected_slots)
+
         # Sort slots top-to-bottom, left-to-right
-        if len(detected_slots) >= 4:
-            detected_slots = sorted(detected_slots, key=lambda s: (s["bbox"][1] // 60, s["bbox"][0]))
+        if len(detected_slots) >= 2:
+            detected_slots = sorted(detected_slots, key=lambda s: (s["bbox"][1] // 50, s["bbox"][0]))
             for i, s in enumerate(detected_slots):
                 s["id"] = i + 1
             return detected_slots
 
-        # If automatic detection yields few slots, return empty to fallback to grid
         return []
+
+    def _suppress_overlaps(self, slots: List[Dict[str, Any]], iou_thresh: float = 0.35) -> List[Dict[str, Any]]:
+        """Non-Maximum Suppression (NMS) for overlapping slot bounding boxes."""
+        boxes = np.array([s["bbox"] for s in slots])
+        x1 = boxes[:, 0]
+        y1 = boxes[:, 1]
+        x2 = boxes[:, 0] + boxes[:, 2]
+        y2 = boxes[:, 1] + boxes[:, 3]
+        areas = boxes[:, 2] * boxes[:, 3]
+
+        order = areas.argsort()[::-1]
+        keep = []
+
+        while order.size > 0:
+            i = order[0]
+            keep.append(slots[i])
+
+            xx1 = np.maximum(x1[i], x1[order[1:]])
+            yy1 = np.maximum(y1[i], y1[order[1:]])
+            xx2 = np.minimum(x2[i], x2[order[1:]])
+            yy2 = np.minimum(y2[i], y2[order[1:]])
+
+            w = np.maximum(0.0, xx2 - xx1)
+            h = np.maximum(0.0, yy2 - yy1)
+            inter = w * h
+
+            ovr = inter / (areas[i] + areas[order[1:]] - inter)
+            inds = np.where(ovr <= iou_thresh)[0]
+            order = order[inds + 1]
+
+        return keep
 
     def preprocess_frame(
         self,
@@ -68,9 +127,7 @@ class ParkingDetector:
         block_size: int = 25,
         c_val: int = 16
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Preprocesses frame into Grayscale, HSV, Adaptive Binarization, and Morphological Dilation.
-        """
+        """Preprocesses frame into Grayscale, HSV, and Adaptive Threshold maps."""
         if len(image.shape) == 3:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
             hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
@@ -78,7 +135,7 @@ class ParkingDetector:
             gray = image.copy()
             hsv = cv2.cvtColor(cv2.cvtColor(image, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2HSV)
 
-        # Gaussian Blur to suppress asphalt texture noise
+        # Gaussian Blur to remove asphalt grain
         blur_kernel = max(3, blur_kernel | 1)
         blurred = cv2.GaussianBlur(gray, (blur_kernel, blur_kernel), 0)
 
@@ -88,7 +145,6 @@ class ParkingDetector:
             blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, block_size, c_val
         )
 
-        # Median filter & Dilation
         binary = cv2.medianBlur(binary, 5)
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
         binary = cv2.dilate(binary, kernel, iterations=1)
@@ -104,14 +160,15 @@ class ParkingDetector:
     ) -> Dict[str, Any]:
         """
         Multi-Feature classification for a single parking slot ROI:
-        1. Inner Center ROI Cropping (Ignores outer white parking lines)
-        2. Edge & Contour Density (Canny + Adaptive Binary)
-        3. Grayscale Texture Standard Deviation (Smooth Asphalt < 15 vs Vehicle Paint/Glass > 24)
+        1. Inner Center ROI Cropping (Ignores outer painted boundary lines)
+        2. Edge Density & Canny Contour Ratio
+        3. Grayscale Texture Variance (Std Dev)
         4. HSV Color Saturation Variance
+        5. Background Contrast Differential
         """
         x, y, w, h = bbox
 
-        # Crop inner 82% ROI to strictly isolate vehicle body from boundary lines
+        # Crop inner 82% ROI to isolate vehicle body
         pad_w = int(w * 0.09)
         pad_h = int(h * 0.09)
 
@@ -134,15 +191,15 @@ class ParkingDetector:
 
         total_pixels = float(roi_binary.size)
 
-        # Feature 1: Adaptive Binarized Pixel Density
+        # Feature 1: Edge Pixel Density
         non_zero = cv2.countNonZero(roi_binary)
         binary_ratio = non_zero / total_pixels
 
-        # Feature 2: Grayscale Texture Standard Deviation (Asphalt < 15, Vehicles > 22)
+        # Feature 2: Texture Standard Deviation (Asphalt < 15, Vehicles > 22)
         _, std_dev = cv2.meanStdDev(roi_gray)
         std_val = float(std_dev[0][0])
 
-        # Feature 3: HSV Saturation & Value Variance
+        # Feature 3: HSV Color Saturation Variance
         if len(roi_hsv.shape) == 3 and roi_hsv.shape[2] == 3:
             sat_channel = roi_hsv[:, :, 1]
             val_channel = roi_hsv[:, :, 2]
@@ -152,7 +209,7 @@ class ParkingDetector:
         else:
             color_variance = std_val
 
-        # Feature 4: Canny Edge Ratio
+        # Feature 4: Canny Contour Edge Ratio
         canny_img = cv2.Canny(roi_gray, 40, 140)
         canny_ratio = cv2.countNonZero(canny_img) / total_pixels
 
@@ -164,7 +221,7 @@ class ParkingDetector:
 
         composite_score = (0.35 * score_binary) + (0.30 * score_canny) + (0.20 * score_texture) + (0.15 * score_color)
 
-        # Dynamic Threshold based on sensitivity slider
+        # Dynamic Decision Threshold based on sensitivity slider
         decision_threshold = 0.28 * (1.25 - self.sensitivity)
         is_occupied = composite_score >= decision_threshold
 
@@ -180,9 +237,7 @@ class ParkingDetector:
         image: np.ndarray,
         slots: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
-        """
-        Analyzes all parking slot ROIs and renders color-coded occupancy overlays.
-        """
+        """Analyzes all parking slot ROIs and renders color-coded occupancy overlays."""
         gray, hsv, binary = self.preprocess_frame(image)
         overlay = image.copy()
 

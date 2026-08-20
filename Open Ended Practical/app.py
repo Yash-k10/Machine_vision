@@ -2,7 +2,7 @@
 Smart Parking Slot Detection Web Dashboard (FastAPI + White & Olive Theme).
 
 Provides real-time parking slot occupancy monitoring, multi-feature OpenCV classification,
-automatic slot outline detection, Red 🔴 Occupied vs Green 🟢 Vacant visual overlays, and analytics summaries.
+interactive canvas slot box placement, and real-life parking feed analysis.
 Made by Yash Kapse.
 """
 
@@ -15,7 +15,7 @@ import random
 import cv2
 import numpy as np
 import traceback
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -49,6 +49,7 @@ class ProcessRequest(BaseModel):
     image_base64: Optional[str] = None
     sensitivity: float = 0.5
     auto_detect_slots: bool = False
+    custom_slots: Optional[List[Dict[str, Any]]] = None
     blur_kernel: int = 3
     block_size: int = 25
     c_val: int = 16
@@ -91,7 +92,7 @@ async def generate_sample(occupied_count: int = 6):
 async def process_parking_frame(req: ProcessRequest):
     """
     Process parking lot image using Multi-Feature OpenCV Classification Engine.
-    Supports automatic slot outline detection or resolution-scaled grid layouts.
+    Supports custom user-defined bounding boxes, auto-contour detection, or resolution-scaled grid layouts.
     """
     try:
         if not req.image_base64:
@@ -111,11 +112,15 @@ async def process_parking_frame(req: ProcessRequest):
         detector = ParkingDetector(sensitivity=req.sensitivity)
         slots = []
 
-        # Check if automatic slot outline detection is requested or fallback to resolution scaling
-        if req.auto_detect_slots:
+        # 1. Custom User-Defined Slots
+        if req.custom_slots and len(req.custom_slots) > 0:
+            slots = req.custom_slots
+        # 2. Auto Line Contour Detection
+        elif req.auto_detect_slots:
             slots = detector.detect_automatic_slots(raw_img)
 
-        if not slots:
+        # 3. Fallback: Resolution-Scaled Multi-Bay Grid
+        if not slots or len(slots) == 0:
             base_slots = slot_manager.load_slots()
             img_h, img_w = raw_img.shape[:2]
             base_w, base_h = 780, 530
@@ -123,6 +128,7 @@ async def process_parking_frame(req: ProcessRequest):
             scale_x = img_w / base_w
             scale_y = img_h / base_h
 
+            slots = []
             for s in base_slots:
                 bx, by, bw, bh = s["bbox"]
                 sx = max(0, int(bx * scale_x))
@@ -448,6 +454,7 @@ async def serve_ui():
             justify-content: center;
             overflow: hidden;
             border: 1px solid #e2e8f0;
+            position: relative;
         }
         .img-preview-container img { max-width: 100%; max-height: 540px; object-fit: contain; }
 
@@ -514,7 +521,7 @@ async def serve_ui():
                 <div class="section-title">⚙️ Slot Detection Settings</div>
 
                 <div class="toggle-switch">
-                    <span>Auto-Detect Slot Outlines</span>
+                    <span>Auto-Detect Line Outlines</span>
                     <input type="checkbox" id="chkAutoDetectSlots" onchange="triggerProcess()">
                 </div>
 
@@ -527,7 +534,7 @@ async def serve_ui():
                 </div>
 
                 <div style="font-size: 0.78rem; color: var(--text-muted); line-height: 1.4; background: var(--olive-soft); padding: 10px; border-radius: 8px;">
-                    💡 <strong>Multi-Feature Fusion:</strong> Crops inner 80% ROI to ignore white lines. Analyzes Edge Density, Canny Contours & HSV Color Variance.
+                    💡 <strong>Real-Life Multi-Feature Fusion:</strong> Analyzes inner ROI edge density, Canny contours, and HSV color variance. Works on any real parking photo/video frame.
                 </div>
             </div>
 
