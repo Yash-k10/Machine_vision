@@ -1,7 +1,7 @@
 """
 Smart Parking Slot Detection Web Dashboard (FastAPI + White & Olive Theme).
 
-Provides real-time parking slot occupancy monitoring, pixel density tuning,
+Provides real-time parking slot occupancy monitoring, multi-feature OpenCV classification,
 Red 🔴 Occupied vs Green 🟢 Vacant visual overlays, and analytics summaries.
 Made by Yash Kapse.
 """
@@ -11,6 +11,7 @@ import sys
 import io
 import base64
 import json
+import random
 import cv2
 import numpy as np
 import traceback
@@ -46,7 +47,7 @@ slot_manager = SlotManager()
 
 class ProcessRequest(BaseModel):
     image_base64: Optional[str] = None
-    pixel_threshold: int = 800
+    sensitivity: float = 0.5
     blur_kernel: int = 3
     block_size: int = 25
     c_val: int = 16
@@ -81,14 +82,14 @@ async def generate_sample(occupied_count: int = 6):
             "metadata": meta
         }
     except Exception as e:
+        traceback.print_exc()
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 
 @app.post("/api/process")
 async def process_parking_frame(req: ProcessRequest):
     """
-    Process parking lot image, run ROI edge/pixel density classification,
-    and return classified bounding box overlay and stats.
+    Process parking lot image using Multi-Feature OpenCV Classification Engine.
     """
     try:
         if not req.image_base64:
@@ -105,10 +106,10 @@ async def process_parking_frame(req: ProcessRequest):
         if raw_img is None:
             return JSONResponse(status_code=400, content={"success": False, "error": "Could not decode parking image."})
 
-        # Load or generate grid slots matching image dimensions
+        # Load grid slots
         slots = slot_manager.load_slots()
         
-        detector = ParkingDetector(pixel_threshold=req.pixel_threshold)
+        detector = ParkingDetector(sensitivity=req.sensitivity)
         res = detector.process_slots(raw_img, slots)
 
         return {
@@ -151,7 +152,7 @@ async def export_report(request: Request):
         ]
         for s in stats.get("slots", []):
             icon = "🔴 OCCUPIED" if s.get("occupied") else "🟢 VACANT"
-            text_lines.append(f"Slot {s.get('id'):<2} | Status: {icon:<11} | Edge Pixel Count: {s.get('non_zero_pixels')}")
+            text_lines.append(f"Slot {s.get('id'):<2} | Status: {icon:<11} | Confidence: {s.get('confidence')}% | Texture StdDev: {s.get('texture_std_dev')}")
 
         report_text = "\n".join(text_lines)
 
@@ -476,18 +477,18 @@ async def serve_ui():
             </div>
 
             <div>
-                <div class="section-title">⚙️ Vision Threshold Tuning</div>
+                <div class="section-title">⚙️ Vision Sensitivity Tuning</div>
 
                 <div class="control-group">
                     <div class="control-label">
-                        <span>Pixel Threshold</span>
-                        <span id="lblThresholdVal">800 px</span>
+                        <span>Detection Sensitivity</span>
+                        <span id="lblSensitivityVal">0.5</span>
                     </div>
-                    <input type="range" id="pixelThreshold" min="200" max="2500" step="50" value="800" oninput="updateThresholdLabel(this.value)">
+                    <input type="range" id="sensitivityRange" min="0.1" max="1.0" step="0.05" value="0.5" oninput="updateSensitivityLabel(this.value)">
                 </div>
 
                 <div style="font-size: 0.78rem; color: var(--text-muted); line-height: 1.4; background: var(--olive-soft); padding: 10px; border-radius: 8px;">
-                    💡 <strong>Viva Concept:</strong> Higher non-zero edge density indicates vehicle occupancy. Lower counts indicate an empty bay.
+                    💡 <strong>Multi-Feature Fusion:</strong> Fuses Inner Edge Density, Canny Contours & Texture Standard Deviation. Ignores white boundary lines.
                 </div>
             </div>
 
@@ -543,11 +544,12 @@ async def serve_ui():
                                 <tr>
                                     <th>Slot ID</th>
                                     <th>Status</th>
-                                    <th>Edge Density</th>
+                                    <th>Confidence</th>
+                                    <th>Texture StdDev</th>
                                 </tr>
                             </thead>
                             <tbody id="slotTableBody">
-                                <tr><td colspan="3" style="text-align: center; color: var(--text-muted);">No slots analyzed yet.</td></tr>
+                                <tr><td colspan="4" style="text-align: center; color: var(--text-muted);">No slots analyzed yet.</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -564,8 +566,8 @@ async def serve_ui():
         let currentData = null;
         let selectedImageBase64 = null;
 
-        function updateThresholdLabel(val) {
-            document.getElementById('lblThresholdVal').innerText = val + ' px';
+        function updateSensitivityLabel(val) {
+            document.getElementById('lblSensitivityVal').innerText = val;
             if (selectedImageBase64) {
                 triggerProcess();
             }
@@ -615,7 +617,7 @@ async def serve_ui():
 
             const payload = {
                 image_base64: selectedImageBase64,
-                pixel_threshold: parseInt(document.getElementById('pixelThreshold').value)
+                sensitivity: parseFloat(document.getElementById('sensitivityRange').value)
             };
 
             try {
@@ -662,7 +664,8 @@ async def serve_ui():
                 tr.innerHTML = `
                     <td style="font-weight: 700;">Slot ${s.id}</td>
                     <td><span class="badge-status ${badgeClass}">${statusText}</span></td>
-                    <td>${s.non_zero_pixels} px</td>
+                    <td>${s.confidence}%</td>
+                    <td>${s.texture_std_dev}</td>
                 `;
                 tbody.appendChild(tr);
             });
