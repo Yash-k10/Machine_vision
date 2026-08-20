@@ -611,12 +611,15 @@ async def serve_ui():
     <script>
         let currentData = null;
         let selectedImageBase64 = null;
+        let _debounceTimer = null;
 
         function updateSensitivityLabel(val) {
             document.getElementById('lblSensitivityVal').innerText = val;
-            if (selectedImageBase64) {
-                triggerProcess();
-            }
+            // Debounce: only fire process 400ms after user stops moving slider
+            clearTimeout(_debounceTimer);
+            _debounceTimer = setTimeout(() => {
+                if (selectedImageBase64) triggerProcess();
+            }, 400);
         }
 
         function handleFileSelect(evt) {
@@ -654,8 +657,11 @@ async def serve_ui():
             }
         }
 
+        let _processing = false;
+
         async function triggerProcess() {
-            if (!selectedImageBase64) return;
+            if (!selectedImageBase64 || _processing) return;
+            _processing = true;
 
             const btn = document.getElementById('btnProcess');
             btn.disabled = true;
@@ -673,18 +679,26 @@ async def serve_ui():
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
-                const data = await res.json();
 
-                if (!res.ok || !data.success) {
-                    alert("Detection error: " + (data.error || "Processing failed."));
+                if (!res.ok) {
+                    let errMsg = 'Server error ' + res.status;
+                    try { const ej = await res.json(); errMsg = ej.error || errMsg; } catch(e) {}
+                    alert('Detection error: ' + errMsg);
+                    return;
+                }
+
+                const data = await res.json();
+                if (!data.success) {
+                    alert('Detection error: ' + (data.error || 'Processing failed.'));
                     return;
                 }
 
                 currentData = data;
                 updateUI(data);
             } catch (err) {
-                alert("Connection error: " + err);
+                alert('Connection error: ' + err);
             } finally {
+                _processing = false;
                 btn.disabled = false;
                 btn.innerText = '🔍 Detect Occupancy';
             }
