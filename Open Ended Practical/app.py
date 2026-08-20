@@ -106,9 +106,26 @@ async def process_parking_frame(req: ProcessRequest):
         if raw_img is None:
             return JSONResponse(status_code=400, content={"success": False, "error": "Could not decode parking image."})
 
-        # Load grid slots
-        slots = slot_manager.load_slots()
-        
+        # Load grid slots and scale dynamically to uploaded image dimensions
+        base_slots = slot_manager.load_slots()
+        img_h, img_w = raw_img.shape[:2]
+        base_w, base_h = 780, 530
+
+        scale_x = img_w / base_w
+        scale_y = img_h / base_h
+
+        slots = []
+        for s in base_slots:
+            bx, by, bw, bh = s["bbox"]
+            sx = max(0, int(bx * scale_x))
+            sy = max(0, int(by * scale_y))
+            sw = max(10, min(img_w - sx, int(bw * scale_x)))
+            sh = max(10, min(img_h - sy, int(bh * scale_y)))
+            slots.append({
+                "id": s["id"],
+                "bbox": [sx, sy, sw, sh]
+            })
+
         detector = ParkingDetector(sensitivity=req.sensitivity)
         res = detector.process_slots(raw_img, slots)
 

@@ -84,7 +84,13 @@ class ParkingDetector:
         roi_gray = gray_img[crop_y:crop_y + crop_h, crop_x:crop_x + crop_w]
 
         if roi_binary.size == 0 or roi_gray.size == 0:
-            return {"occupied": False, "confidence": 0.0, "non_zero": 0, "std_dev": 0.0}
+            return {
+                "occupied": False,
+                "confidence": 0.0,
+                "non_zero_pixels": 0,
+                "binary_ratio": 0.0,
+                "texture_std_dev": 0.0
+            }
 
         total_pixels = float(roi_binary.size)
 
@@ -140,7 +146,7 @@ class ParkingDetector:
             x, y, w, h = slot["bbox"]
 
             roi_stats = self.analyze_slot_roi(gray, binary, slot["bbox"])
-            is_occupied = roi_stats["occupied"]
+            is_occupied = roi_stats.get("occupied", False)
 
             if is_occupied:
                 occupied_count += 1
@@ -162,7 +168,8 @@ class ParkingDetector:
             cv2.putText(overlay, label, (x + 4, y - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
 
             # Draw status icon & confidence score label at bottom of slot
-            conf_str = f"{int(roi_stats['confidence'])}%"
+            conf_val = roi_stats.get("confidence", 0.0)
+            conf_str = f"{int(conf_val)}%"
             cv2.rectangle(overlay, (x, y + h - 18), (x + w, y + h), (20, 20, 20), -1)
             cv2.putText(overlay, f"{status_str} ({conf_str})", (x + 4, y + h - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.38, color, 1)
 
@@ -171,9 +178,9 @@ class ParkingDetector:
                 "bbox": [x, y, w, h],
                 "occupied": is_occupied,
                 "status": status_str,
-                "confidence": roi_stats["confidence"],
-                "non_zero_pixels": roi_stats["non_zero_pixels"],
-                "texture_std_dev": roi_stats["texture_std_dev"]
+                "confidence": conf_val,
+                "non_zero_pixels": roi_stats.get("non_zero_pixels", 0),
+                "texture_std_dev": roi_stats.get("texture_std_dev", 0.0)
             })
 
         # Calculate occupancy percentage
